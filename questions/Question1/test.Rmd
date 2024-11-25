@@ -5,3 +5,249 @@ date: "`r Sys.Date()`"
 output: pdf_document
 ---
 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Necessary packages
+
+rm(list = ls()) 
+gc()
+
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll)
+
+list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+```
+
+I want to make and showcase the performance of a fund, called AI_Implementer.
+
+Need to put this performance in perspective by comparing it to industry peers, the Capped SWIX and ASISA active managers
+
+```{r}
+
+# Looking at the benchmark
+
+bm <- read_rds("data/Capped_SWIX.rds")%>% 
+    dplyr::select(-Tickers) %>% 
+    arrange(date) %>% 
+    mutate(Fund = "Benchmark")
+
+# Looking at the AI fund
+
+ai_fund <- read_rds("data/AI_Max_Fund.rds")%>% 
+    rename(Returns = AI_Fund) %>% 
+    mutate(date = as.Date(date)) %>% 
+    arrange(date) %>% 
+    mutate(Fund = "AI_Fund")
+
+# Looking at the other funds and making them wide to join 
+
+asisa <- read_rds("data/ASISA_Rets.rds")%>% 
+    dplyr::select(-FoF, -Index) %>% 
+    arrange(date) 
+
+# Put them all into one data frame
+
+data = rbind(bm, ai_fund, asisa) %>% 
+    arrange(date) %>% 
+    dplyr::filter(date >= ymd(20080101))
+
+# Calculating the different type of returns
+
+data <- data %>% 
+    
+    # First calculating cumulative returns
+    
+    mutate(Returns = coalesce(Returns, 0)) %>% 
+    group_by(Fund) %>% 
+    mutate(Cum_Ret = cumprod(1 + Returns)) %>% 
+    
+    # Now calculating rolling returns
+    
+    mutate(Rolling_Ret = RcppRoll::roll_prod(1 + Returns,
+                                             12,
+                                             fill = NA,
+                                             align = "right") ^ (12 / 12) - 1) %>%  
+    group_by(date) %>% 
+    filter(any(!is.na(Rolling_Ret))) %>% 
+    ungroup() 
+    
+
+```
+
+First, lets get the top 5 best performing ASISA funds according to cumulative return
+
+```{r}
+bm_cum_ret <- data %>% 
+    dplyr::filter(date == max(date)) %>% 
+    dplyr::filter(Fund == "Benchmark") %>% 
+    pull(Cum_Ret)
+
+exceed <- data %>% 
+    dplyr::filter(date == max(date)) %>% 
+    dplyr::filter(!(Fund %in% c("AI_Fund", "Benchmark"))) %>% 
+    mutate(exceed = ifelse(Cum_Ret >= max(bm_cum_ret), 1, 0)) %>% 
+    mutate(percent_exceed = sum(exceed) / length(unique(Fund)) * 100) %>% 
+    pull(percent_exceed) %>% 
+    unique
+    
+# Only 1.31 percent of all the funds in this data set perform above the benchmark according to accumulative returns
+# If we take only the top 5 performing...
+
+best_asisa <- data %>% 
+    dplyr::filter(date == max(date)) %>% 
+    dplyr::filter(!(Fund %in% c("AI_Fund", "Benchmark"))) %>% 
+    mutate(exceed = ifelse(Cum_Ret >= bm_cum_ret, 1, 0)) %>% 
+    dplyr::filter(exceed == 1) %>% 
+    arrange(desc(Cum_Ret)) %>% 
+    head(5) %>% 
+    pull(Fund)
+
+# Now filter the ASISA fund to only look at these 5 and our other two measures
+
+data_subset1 <- data %>% 
+    dplyr::filter(Fund %in% c(best_asisa, c("AI_Fund", "Benchmark")))
+
+# Random funds
+
+set.seed(98765)
+
+data_subset2 <- data %>% 
+    dplyr::filter(Fund %in% c(sample(unique(asisa$Fund), 5), c("AI_Fund", "Benchmark")))
+```
+
+Now lets pot this cumulative return according to the benchmark
+
+```{r}
+ggplot() +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% best_asisa),
+              aes(x = date,
+                  y = Cum_Ret,
+                  color = Fund),
+              size = 0.7,
+              alpha = 0.5) +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("Benchmark")),
+              aes(x = date,
+                  y = Cum_Ret),
+              color = "black", 
+              type = "dashed",
+              size = 0.8) +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("AI_Fund")),
+              aes(x = date,
+                  y = Cum_Ret),
+              size = 0.8,
+              color = "red") +
+    labs(x = "Date",
+         y = "Cumulative Returns") +
+    theme_bw()
+```
+
+Now lets look at the funds with a 200 basis point fee
+
+```{r}
+fee_rate <- 300 / 10000
+
+    # Annual rate compounded monthly
+
+    monthly_fee_rate <- (1 + fee_rate) ^ (1/12) - 1
+
+    # Apply monthly fee rate cumulatively using compound interest
+
+
+asisa_fee1 <- data_subset1 %>% 
+    arrange(date) %>% 
+    dplyr::filter(Fund %in% best_asisa) %>% 
+    group_by(Fund) %>% 
+    mutate(Fee = Returns - monthly_fee_rate) %>% 
+    mutate(Fee_Cum = cumprod(1 + Fee))
+    
+ ggplot() +
+    geom_line(data = asisa_fee1,
+              aes(x = date,
+                  y = Fee_Cum,
+                  color = Fund),
+              size = 0.7,
+              alpha = 0.5) +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("Benchmark")),
+              aes(x = date,
+                  y = Cum_Ret),
+              color = "black", 
+              type = "dashed",
+              size = 0.8) +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("AI_Fund")),
+              aes(x = date,
+                  y = Cum_Ret),
+              size = 0.8,
+              color = "red") +
+    labs(x = "Date",
+         y = "Cumulative Returns") +
+    theme_bw()   
+
+
+```
+Now look at rolling returns
+
+```{r}
+ggplot() +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% best_asisa),
+              aes(x = date,
+                  y = Rolling_Ret,
+                  color = Fund),
+              size = 0.7,
+              alpha = 0.5) +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("Benchmark")),
+              aes(x = date,
+                  y = Rolling_Ret),
+              color = "black", 
+              linetype = "dashed",
+              size = 0.8) +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("AI_Fund")),
+              aes(x = date,
+                  y = Rolling_Ret),
+              size = 0.8,
+              color = "red") +
+    labs(x = "Date",
+         y = "Rolling Returns") +
+    theme_bw()   
+```
+
+
+Now lets stratify. This is best case scenario
+
+```{r}
+strat1 <- data_subset1 %>% 
+    dplyr::select(date, Fund, Rolling_Ret) %>% 
+    pivot_wider(names_from = Fund,
+                values_from = Rolling_Ret) %>% 
+    pivot_longer(cols = c(-date, -Benchmark),
+                 names_to = "Fund", 
+                 values_to = "Returns") %>% 
+    group_by(Fund) %>% 
+    mutate(Performance = case_when(Returns > Benchmark ~ "Outperforming",
+                                   Returns < Benchmark ~ "Underperforming",
+                                   TRUE ~ "Matching"))
+
+ggplot(strat1, aes(x = Fund, fill = Performance)) +
+  geom_bar() +
+  labs(title = "Performance Comparison of Funds vs Benchmark",
+       x = "Performance Category",
+       y = "Number of Observations")
+
+
+strat2 <- data_subset2 %>% 
+    dplyr::select(date, Fund, Rolling_Ret) %>% 
+    pivot_wider(names_from = Fund,
+                values_from = Rolling_Ret) %>% 
+    pivot_longer(cols = c(-date, -Benchmark),
+                 names_to = "Fund", 
+                 values_to = "Returns") %>% 
+    group_by(Fund) %>% 
+    mutate(Performance = case_when(Returns > Benchmark ~ "Outperforming",
+                                   Returns < Benchmark ~ "Underperforming",
+                                   TRUE ~ "No Data"))
+
+ggplot(strat2, aes(x = Fund, fill = Performance)) +
+  geom_bar() +
+  labs(title = "Performance Comparison of Funds vs Benchmark",
+       x = "Performance Category",
+       y = "Number of Observations")
+```
+
