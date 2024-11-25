@@ -73,14 +73,9 @@ estimatePORT <- function(data,
 
     weights <- data %>%
         mutate(m = as.numeric(format(x = Date,
-                                     format = "%m")),
-               ym = as.numeric(format(x = Date,
-                                      format = "%Y%m"))) %>%
+                                     format = "%m"))) %>%
         dplyr::filter(m %in% rebalance_months) %>%
-        group_by(ym, m, Index) %>%
-        filter(Date == last(Date)) %>%
-        ungroup() %>%
-        dplyr::select(-m, -ym) %>%
+        dplyr::select(-m) %>%
         inner_join(weights,
                    by = "Index")
 
@@ -119,48 +114,12 @@ estimatePORT <- function(data,
 
     portfolio <- rmsfuns::Safe_Return.portfolio(R = indices_xts,
                                                 weights = weights_xts,
-                                                lag_weights = T,
+                                                lag_weights = F,
                                                 verbose = T,
                                                 contribution = T,
                                                 value = Fund_Size_at_Start,
                                                 geometric = T)
 
-
-    # Clean and save portfolio returns and weights:
-
-    contribution <- portfolio$"contribution" %>%
-        xts_tbl() %>%
-        pivot_longer(cols = -date,
-                     names_to = "Index",
-                     values_to = "Contribution")
-
-    bp_weight <- portfolio$"BOP.Weight" %>%
-        xts_tbl() %>%
-        pivot_longer(cols = -date,
-                     names_to = "Index",
-                     values_to = "Weights")
-    bp_value <- portfolio$"BOP.Value" %>%
-        xts_tbl() %>%
-        pivot_longer(cols = -date,
-                     names_to = "Index",
-                     values_to = "Value_Held")
-
-    # Now bind all of these columns together
-
-    portfolio <- data %>%
-        rename(date = Date) %>%
-        left_join(bp_weight, by = c("date", "Index")) %>%
-        left_join(bp_value, by = c("date", "Index")) %>%
-        left_join(contribution, by = c("date", "Index"))
-
-    # Now we can calculate the portfolio returns...
-
-    portfolio_returns <- portfolio %>%
-        group_by(date) %>%
-        summarise(PortfolioReturn = sum(Returns * Weights,
-                                        na.rm = T)) %>%
-        filter(PortfolioReturn !=0)
-
-    return(portfolio_returns)
+    return(portfolio)
 
 }

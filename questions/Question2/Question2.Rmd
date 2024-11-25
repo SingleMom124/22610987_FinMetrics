@@ -1,8 +1,10 @@
 ---
 title: "Untitled"
 author: "Joshua-Connor Knapp"
-date: "`r Sys.Date()`"
-output: pdf_document
+date: "2024-08-14"
+output:
+  pdf_document:
+    latex_engine: xelatex
 ---
 
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
@@ -10,50 +12,209 @@ output: pdf_document
 
 rm(list = ls()) 
 gc()
-
 library(pacman)
 p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts)
-
 list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
 ```
 
-```{r message=FALSE, warning=FALSE}
+Just USD global port
+
+I shortened the time scale compared to the study as there was not a full year of data for 2023
+
+```{r plot}
 # Loading the data to have a look
+# Flooring the date so that it will be the same as the ZAR data to join later
 
-indices <- read_rds("data/Cncy_Hedge_Assets.rds")
+indices <- read_rds("data/Cncy_Hedge_Assets.rds") %>% 
+    mutate(date = floor_date(date, "month"))
 
+# Calculating the currency returns
+
+zar <- read_rds("data/Monthly_zar.rds") %>% 
+    mutate(fx_change = log(value) - log(lag(value))) %>% 
+    dplyr::select(-Tickers) %>% 
+    mutate(date = floor_date(date, "month"))
+
+# Global 60 - 40 USD portfolio...
+
+us_hedged_port <- indices %>% 
+    dplyr::select(date, MSCI_ACWI, Bbg_Agg) %>% 
+    pivot_longer(cols = -date,
+                 names_to = "Index",
+                 values_to = "Returns") %>% 
+    mutate(Weights = ifelse(Index == "MSCI_ACWI", 0.6, 0.4)) %>% 
+    group_by(date) %>% 
+    mutate(portfolio = sum(Weights * Returns)) %>% 
+    dplyr::select(date, portfolio) %>% 
+    unique() %>% 
+    inner_join(zar, by = "date")
+
+plot <- us_hedged_port %>% 
+    ggplot(aes(x = fx_change,
+                  y = portfolio))+
+    geom_rect(aes(xmin = -Inf, xmax = 0, ymin = 0, ymax = Inf), fill = "yellow4", alpha = 0.002) +  
+    geom_rect(aes(xmin = 0, xmax = Inf, ymin = 0, ymax = Inf), fill = "green3", alpha = 0.002) +  
+    geom_rect(aes(xmin = -Inf, xmax = 0, ymin = -Inf, ymax = 0), fill = "red", alpha = 0.002) +  
+    geom_rect(aes(xmin = 0, xmax = Inf, ymin = -Inf, ymax = 0), fill = "yellow", alpha = 0.002) +  
+    geom_point(color = "darkblue",
+               alpha = 0.5) +
+    geom_smooth(method = "lm",
+                color = "darkgrey", 
+                se = F) +
+    geom_hline(yintercept = 0, 
+               color = "black", 
+               linetype = "dashed", 
+               size = 0.5) +
+    geom_vline(xintercept = 0, 
+               color = "black", 
+               linetype = "dotted", 
+               size = 0.5) +
+    labs(x = "60-40 Global (USD Returns",
+         y = "USD-ZAR Returns") +
+    theme_bw()
+plot
+
+```
+ Estimate the portfolios. I do this with my function
+
+```{r ports, message=FALSE, warning=FALSE}
 # Estimate the weights of the index according to specifications
 
-weights <- data.frame(Indices = colnames(indices)[sapply(indices, is.numeric)],
+weights <- data.frame(Index = colnames(indices)[sapply(indices, is.numeric)],
                       Weights = c(0.6 * 0.3, 0.4 * 0.3, 0.6 * 0.7, 0.4 * 0.7))
 
-# Estimating an unhedged index
+# Estimating an hedged index
+# Hedged indices are those that do not account for rand exposure, so we do nothing to these indices
 
-unhedged_indices <- indices
-
-unhedged_port <- estimatePORT(data = unhedged_indices,
-                              size = 1000,
-                              months = c(1, 7),
-                              weights = weights)
-
-# Now estimating a hedged portfolio
-# Need to adjust USD asset returns for rands first
-
-zar <- read_rds("data/Monthly_zar.rds")
-
-zar <- zar %>% 
-    mutate(fx_change = value / lag(value) - 1) %>% 
-    dplyr::filter(date >= min(indices$date) & date <= max(indices$date)) %>% 
-    dplyr::select(-Tickers, -value)
-
-hedged_indices <- unhedged_indices %>% 
-    inner_join(zar, by = "date") %>% 
-    mutate(MSCI_ACWI = MSCI_ACWI + fx_change + (MSCI_ACWI * fx_change),
-           Bbg_Agg = Bbg_Agg + fx_change + (Bbg_Agg * fx_change)) %>% 
-    dplyr::select(-fx_change) 
+hedged_indices <- indices 
 
 hedged_port <- estimatePORT(data = hedged_indices,
                             size = 1000,
-                            months = c(1, 7),
+                            months = c(1, 4, 7, 10),
                             weights = weights)
+
+# Now estimating as un-hedged portfolio
+# Need to control USD returns for currency effects, do this by adding the change in the rand to the USD indices
+
+unhedged_indices <- indices %>% 
+    inner_join(zar, by = "date") %>% 
+    mutate(MSCI_ACWI = MSCI_ACWI + fx_change,
+           Bbg_Agg = Bbg_Agg + fx_change) %>%
+    dplyr::select(-fx_change, -value) 
+
+unhedged_port <- estimatePORT(data = unhedged_indices,
+                              size = 1000,
+                              months = c(1, 4, 7, 10),
+                              weights = weights)
 ```
+ 
+ Make a table now
+ 
+```{r table, message=FALSE, warning=FALSE}
+# Annualized returns
+
+us_hedged_annual_ret <- us_hedged_port %>% 
+    dplyr::select(date, portfolio) %>% 
+    tbl_xts() %>% 
+    Return.annualized(R = ., 
+                      scale = 12) %>% 
+    data.frame()
+
+hedged_annual_ret <- hedged_port$returns %>% 
+    xts_tbl() %>% 
+    filter(date >= ymd(20041201) & date <= ymd(20221201)) %>% 
+    tbl_xts() %>% 
+    Return.annualized(R = ., 
+                      scale = 12) %>% 
+    data.frame()
+
+unhedged_annual_ret <- unhedged_port$returns %>% 
+    xts_tbl() %>% 
+    filter(date >= ymd(20041201) & date <= ymd(20221201)) %>% 
+    tbl_xts() %>% 
+    Return.annualized(R = ., 
+                      scale = 12) %>% 
+    data.frame()
+
+# Annualized SD
+
+hedged_annual_sd <- hedged_port$returns %>% 
+    sd.annualized(x = ., 
+                      scale = 12)
+
+unhedged_annual_sd <- unhedged_port$returns %>% 
+    sd.annualized(x = ., 
+                      scale = 12)
+
+us_hedged_annual_sd <- us_hedged_port %>% 
+    dplyr::select(date, portfolio) %>% 
+    filter(date >= ymd(20041201) & date <= ymd(20221201)) %>% 
+    tbl_xts() %>% 
+    sd.annualized(x = ., 
+                  scale = 12)
+
+# Putting all into a table
+
+port_comp <- data.frame(Fund = c("Global (USD Returns: Hedged","Global + Local (Hedged)", "Global + Local (Unhedged"),
+                        "Returns Ann." = c(us_hedged_annual_ret$portfolio, hedged_annual_ret$portfolio.returns, unhedged_annual_ret$portfolio.returns),
+                        "Std Ann." = c(us_hedged_annual_sd, hedged_annual_sd, unhedged_annual_sd))
+
+library(huxtable)
+
+huxtable::hux(port_comp) %>% 
+    set_all_padding(4) %>%
+            set_outer_padding(2) %>%
+            set_number_format(value = 4) %>%
+            set_bold(row = 1, col = everywhere) %>%
+            set_bottom_border(row = 1, col = everywhere) %>%
+            set_width(0.5) %>%
+            set_caption("")
+
+```
+Downside risks
+
+```{r}
+library(gt)
+
+portfolios <- left_join(hedged_port$returns %>% xts_tbl() %>% rename("Hedged" = portfolio.returns),
+                            unhedged_port$returns %>% xts_tbl() %>% rename("Unhedged" = portfolio.returns),
+                            by = "date") %>% 
+    filter(date >= ymd(20041201) & date <= ymd(20221201)) %>% 
+    tbl_xts()
+    
+downside_table <- PerformanceAnalytics::table.DownsideRisk(R = portfolios,
+                                             ci = 0.95,
+                                             Rf = 0, 
+                                             MAR = 0) %>% data.frame() %>% 
+    rownames_to_column() 
+
+downside_table[c(1,5,7,8:11),] %>% 
+    gt() %>% 
+    tab_header(title = glue::glue("Downside Risk estimates")) %>% 
+    fmt_percent(columns = 2:3,
+                decimals = 2)
+```
+
+```{r}
+chart.RollingPerformance(R = portfolios,
+                         FUN = "sd",
+                         width = 12, 
+                         main = "Rolling 120 day Standard Deviation", 
+                         legend.loc = "bottomleft",
+                         colorset = c("steelblue", "orange"))
+
+chart.CumReturns(R = portfolios,
+                 width = 12, 
+                 main = "Portfolios cumulative returns", 
+                 legend.loc = "topleft",
+                 colorset = c("steelblue", "orange"))
+
+chart.Drawdown(R = portfolios,
+               width = 12, 
+               main = "Portfolios drawdowns", 
+               legend.loc = "bottomleft",
+               colorset = c("steelblue", "orange"))
+
+```
+
+
