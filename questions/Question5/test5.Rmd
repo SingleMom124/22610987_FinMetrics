@@ -11,13 +11,10 @@ rm(list = ls())
 gc()
 
 library(pacman)
-p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, fmxdat)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, fmxdat, knitr)
 
 list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
 ```
-
-
-
 
 ```{r}
 cncy <- read_rds("data/currencies.rds")
@@ -27,13 +24,13 @@ cncyiv <- read_rds("data/cncyIV.rds")
 bbdxy <- read_rds("data/bbdxy.rds")
 ```
 
-First, look at whether the ZAR is indeed one of the most volatile currecnies over the past few years comparied to other currencies
 
-To do this I am going to select 
 
-Include a mix of G10 currencies (e.g., EUR, JPY, GBP) and emerging market currencies (e.g., BRL, MXN, TRY).
 
-```{r}
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
 
 # Look at 3 emerging market currencies, and 3 G10 currencies
 
@@ -142,15 +139,12 @@ sa_garch <- bestGARCH(data = cleaned_fx_xts$SouthAfrica,
                       garchOrder = c(1, 1), 
                       armaOrder = c(1, 0),
                       fit = "Akaike")
-
 sa_garch$Criteria
-fmxdat::finplot(sa_garch$NIC)
 plot(sa_garch$gjrGARCH, which = 3)
 ```
 Ok, according to this I am going to do a Go-GARCH
 
 ```{r message=FALSE, warning=FALSE}
-
 gogarch <- estimateGOGARCH(data = cleaned_fx_xts,
                            type = "gjrGARCH")
 
@@ -192,14 +186,15 @@ fmxdat::finplot(ggplot(pairs %>% dplyr::filter(grepl("SouthAfrica_", Pairs), !gr
 
 # Average vol
 
-sigma_mean <- sigma %>% 
+sigma %>% 
     group_by(Currency) %>% 
     mutate(Mean_Vol = mean(Vol, na.rm = T)) %>% 
     dplyr::select(-date, -Vol) %>% 
     unique() %>% 
-    arrange(desc(Mean_Vol))
+    arrange(desc(Mean_Vol)) %>% 
+    kable(caption = "Average Conditional Volatility")
 
-library(gt)
+
 
 
 ```

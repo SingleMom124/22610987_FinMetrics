@@ -1,0 +1,184 @@
+---
+title: "Currency Analysis" 
+subtitle: "Volatility and GARCH Estimates"
+author: "Joshua-Connor Knapp"
+format: pdf
+editor: visual
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Necessary packages
+
+rm(list = ls()) 
+invisible(gc())
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, fmxdat, knitr)
+list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Loading data
+
+cncy <- read_rds("data/currencies.rds")
+cncy_carry <- read_rds("data/cncy_Carry.rds")
+cncy_value <- read_rds("data/cncy_value.rds")
+cncyiv <- read_rds("data/cncyIV.rds")
+bbdxy <- read_rds("data/bbdxy.rds")
+```
+
+I am comparing six countries currencies in total, South Africa included. The other five are the Euro area, the United Kingdom, India, Japan, Mexico. That is three G10 currencies, and three emerging market economies. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Look at 3 emerging market currencies, and 3 G10 currencies
+
+countries <- c("SouthAfrica", "Mexico", "India","UK", "Japan", "EU")
+
+# Calculate the currency returns (dlog)
+
+fx_change <- cncy %>% 
+    mutate(Name = gsub("_Cncy", "", Name),
+           Name = gsub("_Inv", "", Name)) %>% 
+    dplyr::filter(Name %in% countries) %>% 
+    group_by(Name) %>% 
+    mutate(Return = log(Price) - log(lag(Price))) %>% 
+    dplyr::filter(date >= ymd(20000101)) %>% 
+    ungroup()
+```
+
+Figure 1 and Figure 2 below give us some insight on the selected currencies. All three emerging market currencies exhibit a trend of depreciation overtime. However, this trend is also present in one of the G10 currencies, the UK's currency. Furthermore, whats interesting is that all six currencies have a clumping together of returns in the positive tail. As such, returns need to be cleaned as to avoid biased model estimates.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Currency Prices Relative to the USD", fig.height=3}
+# Looking at the currency prices relative to the USD
+
+fmxdat::finplot(fx_change%>% 
+                    ggplot() +
+                    aes(x = date,
+                        y = Price,
+                        color = Name) +
+                    geom_line(alpha = 0.5) +
+                    facet_wrap(~ Name,
+                               scales = "free_y") +
+                    labs(x = "Price",
+                         y = "Date") +
+                guides(alpha = "none")) +
+    theme_bw() +
+    theme(legend.position = "none") 
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Currency Returns Distributions", fig.height=3}
+fmxdat::finplot(fx_change %>% 
+    ggplot() +
+    aes(x = Return,
+        fill = Name) +
+    geom_histogram(alpha = 0.5) +
+    facet_wrap(facets = ~ Name,
+               scales = "free_y") + 
+    guides(fill = "none", alpha = "none")) +
+    theme_bw() +
+    theme(legend.position = "none")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+cleaned_fx_xts <- fx_change %>% 
+    tbl_xts(.,
+            cols_to_xts = "Return",
+            spread_by = "Name") %>% 
+    PerformanceAnalytics::Return.clean(.,
+                                       method = "boudt",
+                                       alpha = 0.01) 
+
+cleaned_fx <- cleaned_fx_xts %>% 
+    xts_tbl() %>% 
+    pivot_longer(cols = -date,
+                 names_to = "Currency",
+                 values_to = "Return") %>% 
+    group_by(Currency) %>% 
+    mutate(Return_Sqr = Return ^ 2,
+           Return_Abs = abs(Return)) %>% 
+   ungroup()
+```
+
+I first fit a avariety of univariate GARCH models onto just the ZAR returns in order to determine which is most optimal, given that this is the primary currecny of concern here. The results indicate that a gjrGARCH is most optimal according to AIC and well as all other measures, as indicated in Table 1. The output of this model can be seen in Figure 3.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+sa_garch <- bestGARCH(data = cleaned_fx_xts$SouthAfrica,
+                      comp = c("sGARCH","gjrGARCH","eGARCH","apARCH"),
+                      garchOrder = c(1, 1), 
+                      armaOrder = c(1, 0),
+                      fit = "Akaike")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="ZAR Conditional Volatility", fig.height=3}
+plot(sa_garch$gjrGARCH, which = 3)
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+sa_garch$Criteria %>% 
+    kable(caption = "Optimal GARCH")
+```
+
+In light of this I fit a Go-GARCH to the currencies, applying a gjrGARCH to each. From Figure 2, it is difficult to assess which currency is most volatile as they all exhibit similar levels. As such, the mean conditional volatility for the period is calculated for each currecny, represented in Table 2. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+gogarch <- estimateGOGARCH(data = cleaned_fx_xts,
+                           type = "gjrGARCH")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.height="Conditional Volatilities", fig.height=3}
+# Now plotting the volatilities
+
+sigma <- gogarch$Sigma
+colnames(sigma) <- colnames(cleaned_fx_xts)
+sigma <- sigma %>% 
+    xts_tbl() %>% 
+    pivot_longer(cols = -date,
+                 names_to = "Currency",
+                 values_to = "Vol") 
+sigma %>% 
+    ggplot() +
+    geom_line(aes(x = date,
+                  y = Vol,
+                  color = Currency)) +
+    facet_wrap(~ Currency,
+               scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none") 
+    
+```
+
+Here, we see that South Africa is in fact not the most volatile currency in this selection, only ranking fourth out of the six, with Japan, a G10 currency, being the most volatile. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Average vol
+
+sigma %>% 
+    group_by(Currency) %>% 
+    mutate(Mean_Vol = mean(Vol, na.rm = T)) %>% 
+    dplyr::select(-date, -Vol) %>% 
+    unique() %>% 
+    arrange(desc(Mean_Vol)) %>% 
+    kable(caption = "Average Conditional Volatility")
+```
+
+Figure 4 represents the conditional correlations between the ZAR and each currency, reflecting the relationship between the volatilities over time. If we focus on only the pairs with G10 currencies, we further see that the ZAR exhibits negative correlations during economic crises such as during 2008 or 2020. This indicates that their volatilities move in opposite directions and that when the volatility of one spikes, the volatility of the other decreases. This is indicative of flight to safety behavior.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Currency Correlations: ZAR"}
+# And the correlation pairs
+# The output here has super kak naming though so adjust with the following function
+
+pairs <- gogarch$TV_Cor
+
+pairs <- renameMGARCH(series = cleaned_fx_xts,
+                      pairs = pairs,
+                      long = T)
+
+ggplot(pairs %>% dplyr::filter(grepl("SouthAfrica_", Pairs), !grepl("_SouthAfrica", Pairs))) +
+    geom_line(aes(x = date,
+                  y = Rho,
+                  color = Pairs)) +
+    facet_wrap(~ Pairs,
+               scales = "free_y") +
+    theme_bw() +
+    theme(legend.position = "none")
+```
+
+
+
+
+
+
