@@ -128,7 +128,7 @@ ggplot() +
               aes(x = date,
                   y = Cum_Ret),
               color = "black", 
-              type = "dashed",
+              linetype = "dashed",
               size = 0.8) +
     geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("AI_Fund")),
               aes(x = date,
@@ -223,13 +223,14 @@ strat1 <- data_subset1 %>%
     group_by(Fund) %>% 
     mutate(Performance = case_when(Returns > Benchmark ~ "Outperforming",
                                    Returns < Benchmark ~ "Underperforming",
-                                   TRUE ~ "Matching"))
+                                   TRUE ~ "No Data"))
 
 ggplot(strat1, aes(x = Fund, fill = Performance)) +
   geom_bar() +
   labs(title = "Performance Comparison of Funds vs Benchmark",
        x = "Performance Category",
-       y = "Number of Observations")
+       y = "Number of Observations") + 
+    theme_bw()
 
 
 strat2 <- data_subset2 %>% 
@@ -248,6 +249,7 @@ ggplot(strat2, aes(x = Fund, fill = Performance)) +
   geom_bar() +
   labs(title = "Performance Comparison of Funds vs Benchmark",
        x = "Performance Category",
-       y = "Number of Observations")
+       y = "Number of Observations") +
+    theme_bw()
 ```
 

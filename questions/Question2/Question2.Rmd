@@ -13,7 +13,7 @@ output:
 rm(list = ls()) 
 gc()
 library(pacman)
-p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, gt)
 list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
 ```
 
@@ -155,21 +155,15 @@ us_hedged_annual_sd <- us_hedged_port %>%
 
 # Putting all into a table
 
-port_comp <- data.frame(Fund = c("Global (USD Returns: Hedged","Global + Local (Hedged)", "Global + Local (Unhedged"),
+port_comp_table <- data.frame(Fund = c("Global (USD Returns: Hedged","Global + Local (Hedged)", "Global + Local (Unhedged"),
                         "Returns Ann." = c(us_hedged_annual_ret$portfolio, hedged_annual_ret$portfolio.returns, unhedged_annual_ret$portfolio.returns),
                         "Std Ann." = c(us_hedged_annual_sd, hedged_annual_sd, unhedged_annual_sd))
 
-library(huxtable)
-
-huxtable::hux(port_comp) %>% 
-    set_all_padding(4) %>%
-            set_outer_padding(2) %>%
-            set_number_format(value = 4) %>%
-            set_bold(row = 1, col = everywhere) %>%
-            set_bottom_border(row = 1, col = everywhere) %>%
-            set_width(0.5) %>%
-            set_caption("")
-
+port_comp_table %>% 
+    gt() %>% 
+    tab_header(title = glue::glue("Fund Performance")) %>% 
+    fmt_percent(columns = 2:3,
+                decimals = 2)
 ```
 Downside risks
 
