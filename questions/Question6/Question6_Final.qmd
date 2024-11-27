@@ -1,0 +1,32 @@
+---
+title: "Joshua-Connor Knapp"
+format: pdf
+editor: visual
+---
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Necessary packages
+
+rm(list = ls()) 
+invisible(gc())
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, fmxdat, knitr)
+list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+```
+
+
+```{r}
+maa <- read_rds("data/MAA.rds")
+msci <- read_rds("data/msci.rds") %>% 
+     filter(Name %in% c("MSCI_ACWI", "MSCI_USA", "MSCI_RE", "MSCI_Jap"))
+```
+
+```{r}
+# Looking at indices
+
+data <- maa %>% 
+    mutate(Ticker = gsub(" Index", "", Ticker))
+
+weights <- data.frame(Class = c("RealEstate", "Equity", "BondCredit", "Currency"),
+                      Weights = c(0.25 * 0.125, 0.25 * 0.6, 0.25 * 0.25, 0.25 * 0.125))
+```
+
