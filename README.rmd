@@ -564,6 +564,8 @@ list.files('questions/Question3/code', full.names = T, recursive = T) %>% .[grep
 
 The goal here is to compare the ALSI and SWIX methodologies by looking at sectoral performance and varying index sizes and then within this context evaluating the impact of various capping levels and whether they are necessary. 
 
+The instruction here was to use Texeveir, however, I could not get it to knit. Maybe since I switched to windows 11? It used to work before that but I cant be sure thats the reason. I just used Quarto instead. Apologies.
+
 ```{r echo=FALSE, message=FALSE, warning=FALSE}
 # Loading the ALSI data and getting a look
 # Filtering the data to start in 2013 as it when there is the most available data in small caps
@@ -790,6 +792,160 @@ library(pacman)
 p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, gt, knitr, ggpubr)
 list.files('questions/Question4/code', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
 ```
+
+The goal here is basically to figure out what drives the behavior of a snake oil fun, comparing it to a benchmark strategy, in order to establish some quantitative information that can be used to motivate its use.
+
+Start by loading and viewing the data
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+portholds <- read_rds("questions/Question4/data/Fund_Holds.rds")
+portrets <- read_rds("questions/Question4/data/Fund_Rets.rds")
+bmholds <- read_rds("questions/Question4/data/BM_Holds.rds")
+bmrets <- read_rds("questions/Question4/data/BM_Rets.rds")
+```
+
+First I want to look at just the portfolios so I join them together so that they can be easily plotted.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Joining the two funds by their date columns and removing un-necessary columns
+# Also converting to xts to be used in performance analytics
+
+portfolios <- inner_join(portrets, bmrets, by = "date") %>% 
+    dplyr::select(-Portolio) %>% 
+    rename(SO = Returns) %>% 
+    tbl_xts()
+```
+
+With this we can now estimate a variety of performance measures. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Downside risks
+
+plot(PerformanceAnalytics::table.DownsideRisk(R = portfolios,
+                                         ci = 0.95,
+                                         scale = 12)%>% 
+    rownames_to_column(var = "Estimates") %>% 
+    gt(caption = "Downside Risks"))
+
+# Single Factor Asset-Pricing Model Summary
+
+plot(PerformanceAnalytics::table.SFM(Ra = portfolios$SO,
+                                Rb = portfolios$BM, 
+                                scale = 12,
+                                Rf = 0) %>% 
+    rownames_to_column(var = "Estimates") %>% 
+    gt(caption = "Statistics and STylised Facts"))
+
+# Cumulative returns
+
+PerformanceAnalytics::chart.CumReturns(R = portfolios,
+                                       geometric = T,
+                                       main = "Cumulative Returns",
+                                       legend.loc="bottomright",
+                                       colorset = c("steelblue", "orange"),
+                                       lwd = 1.5)
+
+# 12-month rolling returns
+
+chart.RollingPerformance(R = portfolios, 
+                         width = 12,
+                         main="Rolling 12-Month Returns", 
+                         legend.loc="bottomleft",
+                         colorset = c("steelblue", "orange"),
+                         lwd = 1.5)
+
+```
+Compared to the benchmark (BM), the snake oil fund (SO) bears consistent similarity across the sample period. However, it mostly falls short of the benchmark on a rolling basis and exhibits slightly worse cumulative returns
+
+The moderate tracking error, and negative information ratio and active premium seem to back this up. In contrast, the Alpha indicates that the snake oil fund outperformed the benchmark after taking risk into account. The Beta further suggests a lower volatility compared to the benchmark.
+
+The snake oil fund exhibits smaller maximum draw downs, as well as smaller modified value at risk and expected shortfall estimates. In other words, the snake oil fund carries less risk. 
+
+```{r}
+# Scatter plot
+
+PerformanceAnalytics::chart.Scatter(y = portfolios$SO,
+                                    x = portfolios$BM,
+                                    main = "Scatter: Snake Oil Funds & Capped SWIX",
+                                    ylab = "Snake Oil", 
+                                    xlab = "Capped SWIX",
+                                    col = "black", 
+                                    symbolset = 16)
+
+# 12-month rolling standard deviation
+
+chart.RollingPerformance(R = portfolios,
+                         FUN = "sd",
+                         width = 12, 
+                         main="Rolling 12-Month Standard Deviation", 
+                         legend.loc="bottomleft",
+                         colorset = c("steelblue", "orange"),
+                         lwd = 1.5)
+
+```
+
+Comparing the 12-month rolling volatility, the snake oil fund exhibits much lower volatility in the midst of the pandemic. This suggests an aversion to high levels of risk. 
+The scatter plot of returns seems to confirm this. the capped SWIX has a fatter left tail. In other words, the fund experiences smaller relative negative returns than the benchmark during certain periods. Thus, it would seem the fund performs better in positive market conditions, which 2019 to 2024 are not. This is not a proper evaluation of a long-only fund. 
+
+Lastly I want to look at the sectoral composition of the snake oil fund. I wanted to compare it to the SWIX but there were no weights for it and I couldn't figure out a solution for that, so I just look at it in isolation. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# First extracting each unique stock in the snake oil fund
+
+tickers <- portholds %>% dplyr::select(Tickers) %>% unique() %>% pull(Tickers)
+
+# I then want to determine which sector each is from using the Sector column in the benchmark 'bmholds' data
+# Using the unique stocks in 'tickers' I filter the benchmark data
+# However, there is a duplicate, MNP which as a version for both resources and industrial
+# I keep the resources version
+
+so_holds <- bmholds %>% 
+    dplyr::select(-date, -name, -Portfolio) %>% 
+    unique() %>% 
+    dplyr::filter(Tickers %in% tickers) %>% 
+    mutate(Dup = duplicated(Tickers)) %>% 
+    dplyr::filter(!Dup == T) %>% 
+    dplyr::select(-Dup)
+
+# Now with the Stock names and their relative sectors, I can estimate the weights for each sector by summing them together
+# Convert to xts to pass to performance analytics
+
+sector_weights <- portholds %>% 
+    inner_join(so_holds, by = "Tickers") %>% 
+    group_by(date, Sector) %>% 
+    mutate(Sector_W = sum(Weight)) %>% 
+    dplyr::select(date, Sector, Sector_W) %>% 
+    unique() %>% 
+    pivot_wider(names_from = Sector,
+                values_from = Sector_W) %>% 
+    tbl_xts()
+
+# Now using these sector weights to make a stacked bar chart
+
+PerformanceAnalytics::chart.StackedBar(w = sector_weights,
+                                       space = 0)
+```
+
+As I thought, resources jumped in 2020 as covid hit. Even if I am wrong to choose the resources MNP, removing it from the resource weights would do much to change this chart. 
+
+The fund pushes against risk during crisis periods, and hence in this sample period has performed worse that the benchmark. 
+
+# Question 5 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Necessary packages
+
+rm(list = ls()) 
+invisible(gc())
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, gt, knitr, ggpubr)
+list.files('questions/Question4/code', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+```
+
+
+
+
+
 
 
 
