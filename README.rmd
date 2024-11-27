@@ -127,7 +127,7 @@ Now I plot the cumulative returns of each fund in relation to their improvement 
 
 diffs <- data_subset1 %>%
     group_by(Fund) %>%
-    dplyr::filter(date == last(date)) %>%
+    dplyr::filter(date == max(date)) %>%
     ungroup()
 
 # Getting the max benchmark 
@@ -211,7 +211,7 @@ asisa_fee1 <- data_subset1 %>%
 
 diffs2 <- asisa_fee1 %>%
     group_by(Fund) %>%
-    filter(date == last(date)) %>%
+    filter(date == max(date)) %>%
     ungroup()%>%
     dplyr::filter(!Fund == "Benchmark") %>%
     mutate(final_diff = Fee_Cum / bench_diff * 100 - 100) %>%
@@ -939,13 +939,221 @@ rm(list = ls())
 invisible(gc())
 library(pacman)
 p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, gt, knitr, ggpubr)
-list.files('questions/Question4/code', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+list.files('questions/Question5/code', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+
+cncy <- read_rds("questions/Question5/data/currencies.rds")
+cncy_carry <- read_rds("questions/Question5/data/cncy_Carry.rds")
+cncy_value <- read_rds("questions/Question5/data/cncy_value.rds")
+cncyiv <- read_rds("questions/Question5/data/cncyIV.rds")
+bbdxy <- read_rds("questions/Question5/data/bbdxy.rds")
 ```
 
+Here I want to determine whether the ZAR has been one of the most volatile currencies over the last few years. After loading the data and inspecting it, there are many currencies with missing values and different ranges of availability. 
 
+I decide to select 5 currencies to compare, the Euro area, the United Kingdom, India, Japan, Mexico, six with the ZAR included. That is 3 emerging market currencies and 3 G10 currencies. 
 
+I also decide to start the sample at Jan 2000 so that all selected currencies have a complete amount of data.
 
+Once the currencies are selected I plot their prices relative to the dollar over time and calculate the log returns for each. I plot the distributions of the returns as well to determine whether they should be cleaned or not.
 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Look at 3 emerging market currencies, and 3 G10 currencies
 
+countries <- c("SouthAfrica", "Mexico", "India","UK", "Japan", "EU")
+
+# Calculate the currency returns (dlog)
+
+fx_change <- cncy %>% 
+    mutate(Name = gsub("_Cncy", "", Name),
+           Name = gsub("_Inv", "", Name)) %>% 
+    dplyr::filter(Name %in% countries) %>% 
+    group_by(Name) %>% 
+    mutate(Return = log(Price) - log(lag(Price)),
+           Scaled_Price = Price - mean(Price, na.rm = T)) %>% 
+    dplyr::filter(date >= ymd(20000101)) %>% 
+    ungroup() 
+
+fmxdat::finplot(fx_change%>% 
+                    ggplot() +
+                    aes(x = date,
+                        y = Price,
+                        color = Name) +
+                    geom_line(alpha = 0.5) +
+                    facet_wrap(~ Name,
+                               scales = "free_y") +
+                    labs(x = "Price",
+                         y = "Date") +guides(alpha = "none")) +
+    theme_bw() +
+    theme(legend.position = "none") 
+
+fmxdat::finplot(fx_change %>% 
+                    ggplot() +
+                    aes(x = Return,
+                        fill = Name) +
+                    geom_histogram(alpha = 0.5) +
+                    facet_wrap(facets = ~ Name,
+                               scales = "free_y") + 
+                    guides(fill = "none", alpha = "none")) +
+    theme_bw() +
+    theme(legend.position = "none")
+
+```
+
+All three emerging market currencies exhibit a trend of depreciation overtime. However, this trend is also present in one of the G10 currencies, the UK’s currency. 
+
+Furthermore, we see that all currencies have a clumping together of returns in the positive tail which might bias model estimates. Need to clean returns. I do this using performance analytics.
+
+```{r}
+# Cleaning the returns
+# Needs to be in xts format for performance analytics
+
+cleaned_fx_xts <- fx_change %>% 
+    tbl_xts(.,
+            cols_to_xts = "Return",
+            spread_by = "Name") %>% 
+    PerformanceAnalytics::Return.clean(.,
+                                       method = "boudt",
+                                       alpha = 0.01) 
+
+# Also do a non-xts version for ggploting
+
+cleaned_fx <- cleaned_fx_xts %>% 
+    xts_tbl() %>% 
+    pivot_longer(cols = -date,
+                 names_to = "Currency",
+                 values_to = "Return") %>% 
+    group_by(Currency) %>% 
+    mutate(Return_Sqr = Return ^ 2,
+           Return_Abs = abs(Return)) %>% 
+    ungroup()
+```
+
+I then plot these cleaned returns, their square, and their absolute value
+
+```{r}
+# Cleaned returns
+
+fmxdat::finplot(cleaned_fx %>% 
+    ggplot() +
+    aes(x = date,
+        y = Return,
+        color = Currency) +
+    geom_line(alpha = 0.5) +
+    facet_wrap(facets = ~ Currency,
+               scales = "free") + 
+    ggtitle("Currency returns relative to the USD") +
+    guides(alpha = "none"),
+                y.pct = T, 
+                y.pct_acc = 1) +
+    theme_bw()
+
+# Squared cleaned returns
+
+fmxdat::finplot(cleaned_fx %>% 
+    ggplot() +
+    aes(x = date,
+        y = Return_Sqr,
+        color = Currency) +
+    geom_line(alpha = 0.5) +
+    facet_wrap(facets = ~ Currency,
+               scales = "free") + 
+    ggtitle("Currency returns squared relative to the USD") +
+    guides(alpha = "none")) +
+    theme_bw()
+
+# Absolute cleaned returns
+
+fmxdat::finplot(cleaned_fx %>% 
+    ggplot() +
+    aes(x = date,
+        y = Return_Abs,
+        color = Currency) +
+    geom_line(alpha = 0.5) +
+    facet_wrap(facets = ~ Currency,
+               scales = "free") + 
+    ggtitle("Currency returns absolute relative to the USD") +
+    guides(alpha = "none")) +
+    theme_bw()
+```
+
+There is first order and second order persistence here. Will need to deal with this with a GARCH model.
+
+To determine the most optimal type of GARCH to use, I fit multiple GARCH models to just the ZAR and assess via AIC which is best. I built a function, bestGARCH, to do this automatically. In this case a gjrGARCH has been selected as the best by all metrics. 
+
+```{r}
+sa_garch <- bestGARCH(data = cleaned_fx_xts$SouthAfrica,
+                      comp = c("sGARCH","gjrGARCH","eGARCH","apARCH"),
+                      garchOrder = c(1, 1), 
+                      armaOrder = c(1, 0),
+                      fit = "Akaike")
+sa_garch$Criteria
+plot(sa_garch$gjrGARCH, which = 3)
+```
+
+Now I use a multivariate GARCH model, a Go-GARCH, to apply a gjrGARCH to each series. I do this with a function I wrote, estimateGOGARCH.
+
+```{r message=FALSE, warning=FALSE}
+# Feed the cleaned xts returns and specify the type of GARCH
+
+gogarch <- estimateGOGARCH(data = cleaned_fx_xts,
+                           type = "gjrGARCH")
+```
+
+From the Go-GARCH we can extract the conditional volatilities for each currency as well as the correlation pairs. However, the output for the correlation pairs looks is named in a way that is not very interpretable. As such, I rename them with my renameMGARCH function.
+
+```{r message=FALSE, warning=FALSE}
+# Now plotting the volatilities
+
+sigma <- gogarch$Sigma
+colnames(sigma) <- colnames(cleaned_fx_xts)
+sigma <- sigma %>% 
+    xts_tbl() %>% 
+    pivot_longer(cols = -date,
+                 names_to = "Currency",
+                 values_to = "Vol") 
+fmxdat::finplot(sigma %>% 
+    ggplot() +
+    geom_line(aes(x = date,
+                  y = Vol,
+                  color = Currency)) +
+    facet_wrap(~ Currency,
+               scales = "free_y")) +
+    theme_bw()
+
+# And the correlation pairs
+# The output here has super kak naming though so adjust with the following function
+
+pairs <- gogarch$TV_Cor
+
+# The renaming function
+
+pairs <- renameMGARCH(series = cleaned_fx_xts,
+                      pairs = pairs,
+                      long = T)
+
+fmxdat::finplot(ggplot(pairs %>% dplyr::filter(grepl("SouthAfrica_", Pairs), !grepl("_SouthAfrica", Pairs))) +
+    geom_line(aes(x = date,
+                  y = Rho,
+                  color = Pairs)) +
+        facet_wrap(~ Pairs) +
+        
+    theme_bw() +
+    ggtitle("Go-GARCH: SA"))
+```
+It is difficult to assess which currency is most volatile as they all exhibit similar levels from a visual standpoint. As such, I calculate the mean conditional volatility for each currency. Do this by simply taking the mean of each currencies conditional volatility column.
+
+```{r message=FALSE, warning=FALSE}
+# Average vol
+
+sigma %>% 
+    group_by(Currency) %>% 
+    mutate(Mean_Vol = mean(Vol, na.rm = T)) %>% 
+    dplyr::select(-date, -Vol) %>% 
+    unique() %>% 
+    arrange(desc(Mean_Vol)) %>% 
+    gt(caption = "Average Conditional Volatility")
+```
+
+From this we see that South Africa is in fact not the most volatile currency in this selection. It is a G10 currency, Japan
 
 
