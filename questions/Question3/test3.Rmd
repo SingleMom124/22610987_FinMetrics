@@ -17,7 +17,7 @@ p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR
 list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
 ```
 
-```{r}
+```{r echo=FALSE, message=FALSE, warning=FALSE}
 # Loading the ALSI data and getting a look
 # Filterig the data to start in 2013 as it when there is the most available data in small caps
 
@@ -30,6 +30,8 @@ data <- read_rds("data/ALSI.rds") %>%
 data %>% group_by(date) %>% summarise(sum(J203))
 data %>% group_by(date) %>% summarise(sum(J403))
 
+# First looking at the indices
+
 indices <- data %>% 
     group_by(date) %>% 
     mutate(ALSI = sum(J203 * Return),
@@ -37,66 +39,10 @@ indices <- data %>%
     dplyr::select(date, ALSI, SWIX) %>% 
     unique() %>% 
     arrange(date)
-
-exposure <- data %>% 
-    group_by(date, Sector) %>% 
-    mutate(ALSI_Exposure = sum(J203),
-           SWIX_Exposure = sum(J403)) %>% 
-    ungroup() %>% 
-    dplyr::select(date, Sector, ALSI_Exposure, SWIX_Exposure) %>% 
-    unique() %>% 
-    arrange(Sector)
 ```
 
 
-```{r}
-
-library(ggpubr)
-
-ggarrange(ggplot() + geom_area(data = exposure, aes(x = date, y = ALSI_Exposure, fill = Sector), alpha = 0.7) + theme_bw(), 
-          ggplot() + geom_area(data = exposure, aes(x = date, y = SWIX_Exposure, fill = Sector), alpha = 0.7) + theme_bw(),
-          nrow = 1, ncol = 2,
-          common.legend = T,
-          legend = "bottom")
-
-data %>% 
-    dplyr::select(date, Return, Index_Name) %>% 
-    dplyr::filter(!is.na(Index_Name)) %>%
-    group_by(date, Index_Name) %>% 
-    mutate(Perf = mean(Return)) %>% 
-    dplyr::select(-Return) %>% 
-    unique() %>% 
-    pivot_wider(names_from = Index_Name,
-                values_from = Perf) %>% 
-    tbl_xts() %>% 
-    chart.CumReturns(R = .,
-                 main = "Index size mean cumulative returns", 
-                 legend.loc = "topleft")
-
-data %>% 
-    dplyr::select(date, J203, J403, Index_Name) %>% 
-    group_by(date, Index_Name) %>% 
-    mutate(ALSI = mean(J203, na.rm = T),
-           SWIX = mean(J403, na.rm = T)) %>% 
-    ungroup() %>% 
-    dplyr::select(date, ALSI, SWIX, Index_Name) %>% 
-    unique() %>% 
-    pivot_longer(cols = c(-date, -Index_Name),
-                 names_to = "Index",
-                 values_to = "Mean") %>% 
-    ggplot() +
-    geom_bar(aes(x = Index,
-                 y = Mean, 
-                 fill = Index_Name),
-             stat = "identity",
-              position = position_dodge(width = 0.8), 
-             width = 0.7) +
-    labs(title = "Grouped Bar Plot",
-    fill = "Size") +
-    theme_bw()
-
-
-
+```{r echo=FALSE, message=FALSE, warning=FALSE}
 chart.RollingPerformance(R = indices %>% tbl_xts(),
                          FUN = "sd",
                          width = 120, 
@@ -110,9 +56,76 @@ chart.CumReturns(R = indices%>% tbl_xts(),
                  colorset = c("steelblue", "orange"))
 
 ```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+exposure <- data %>% 
+    group_by(date, Sector) %>% 
+    mutate(ALSI = sum(J203),
+           SWIX = sum(J403)) %>% 
+    ungroup() %>% 
+    dplyr::select(date, Sector, ALSI, SWIX) %>% 
+    unique() %>% 
+    arrange(Sector)
+
+ggarrange(ggplot() + geom_area(data = exposure, aes(x = date, y = ALSI, fill = Sector), alpha = 0.7) + labs(x = "ALSI", y = "") + theme_bw(), 
+          ggplot() + geom_area(data = exposure, aes(x = date, y = SWIX, fill = Sector), alpha = 0.7) + labs(x = "SWIX", y = "") +theme_bw(),
+          nrow = 1, ncol = 2,
+          common.legend = T,
+          legend = "bottom")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Stocks by size and sector
+
+data %>% 
+    dplyr::select(Tickers, Index_Name, Sector) %>% 
+    unique() %>%  
+    mutate(Index_Name = ifelse(is.na(Index_Name), "Not Specified", Index_Name)) %>% 
+    ggplot() +
+    geom_bar(aes(x = Index_Name, 
+                 fill = Sector)) +
+    labs(title = "Stocks by Size and Sector",
+       x = "Index Size",
+       y = "Number of Observations") + 
+    theme_bw()
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+data %>% 
+    dplyr::select(date, Return, Index_Name) %>% 
+    dplyr::filter(!is.na(Index_Name)) %>%
+    group_by(date, Index_Name) %>% 
+    mutate(Perf = mean(Return)) %>% 
+    dplyr::select(-Return) %>% 
+    unique() %>% 
+    pivot_wider(names_from = Index_Name,
+                values_from = Perf) %>% 
+    tbl_xts() %>% 
+    chart.CumReturns(R = .,
+                 main = "Index size mean cumulative returns", 
+                 legend.loc = "topleft")
+data %>% 
+    dplyr::select(date, Return, Index_Name) %>% 
+    dplyr::filter(!is.na(Index_Name)) %>%
+    group_by(date, Index_Name) %>% 
+    mutate(Perf = mean(Return)) %>% 
+    dplyr::select(-Return) %>% 
+    unique() %>% 
+    pivot_wider(names_from = Index_Name,
+                values_from = Perf) %>% 
+    tbl_xts() %>% 
+    chart.RollingPerformance(R = .,
+                         FUN = "sd",
+                         width = 120, 
+                         main = "Rolling 120 day Standard Deviation", 
+                         legend.loc = "topleft")
+
+```
+
+
 Now lets make a capped index
 
-```{r}
+```{r echo=FALSE, message=FALSE, warning=FALSE}
 # Prep function rebalance data
 
 days <- read_rds("data/Rebalance_days.rds") %>% 
@@ -143,7 +156,7 @@ returns <- data %>%
 ```
 
 
-```{r}
+```{r echo=FALSE, message=FALSE, warning=FALSE}
 ALSI_Cap1 <- indexCAP(data = returns,
                   rebalance = ALSI_Reb,
                   cap = 0.05)
@@ -178,5 +191,11 @@ chart.CumReturns(R = capped_indices[, c(1, 2, 5)],
 chart.CumReturns(R = capped_indices[, c(3, 4, 6)],
                  main = "SWIX cumulative returns", 
                  legend.loc = "topleft")
+
+PerformanceAnalytics::table.DownsideRisk(R = capped_indices,
+                                         ci = 0.95,
+                                         scale = 12)%>% 
+    rownames_to_column(var = "Estimates") %>% 
+    kable(caption = "Downside Risks")
 ```
 

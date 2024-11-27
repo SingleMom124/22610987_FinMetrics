@@ -1,0 +1,214 @@
+---
+title: "To Cap or Not to Cap:"
+subtitle: "Comparing the ALSI and SWIX"
+author: Joshua-Connor Knapp
+number-sections: true
+fontfamily: "times"
+format: pdf
+editor: visual
+---
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Necessary packages
+
+rm(list = ls()) 
+invisible(gc())
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, ggpubr, knitr)
+list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+```
+# - Introduction
+In this paper, we will explore the performance of the ALSI and SWIX across various scenarios, focusing on sectoral exposures, index size, and the effects of capping strategies. Section 2 begins by examining the sectoral exposures of both indices, highlighting how changes in key sectors evolved over time, providing insight into the composition and market dynamics of the indices. Following this, section 3 delves the relationship between sizes of the included stocks and their average cumulative returns, considering large, mid, and small caps. Finally, section 4 applies capping strategies of 5% and 10% to the weightings each stock in the ALSI and SWIX, comparing their performance with the uncapped versions, allowing for an understanding of how the influence of the largest stocks affects overall index returns and volatility.
+
+# - ALSI vs SWIX
+Before 2020, the cumulative returns, represented in Figure 1 of the SWIX either outperformed or closely tracked the ALSI, indicating that SWIX was either delivering better returns or moving in parallel with the broader market, providing similar returns to ALSI. However, after 2020, SWIX began to underperform the ALSI, suggesting a shift in the relative performance of the two indices. This change could reflect various factors such as a divergence in sectoral compositions, macroeconomic conditions, or investor sentiment, which may have favored the broader ALSI over the more specific sectors tracked by SWIX.
+
+Before 2020, the rolling 120-day standard deviation of returns, represented in Figure 2, for SWIX was either higher than or tracked closely with ALSI, suggesting that SWIX experienced more volatility or similar volatility compared to the broader market. This could be due to SWIX's greater exposure to sectors that are more sensitive to market fluctuations or economic shocks. However, halfway through 2020, as the COVID-19 pandemic triggered widespread shutdowns, both indices tracked together, likely reflecting the heightened market uncertainty and risk aversion across all sectors during the global crisis. After 2020, the rolling 120-day standard deviation for SWIX decreased, indicating that SWIX experienced lower volatility relative to ALSI. This shift could be attributed to several factors, such as the relative stabilization of the sectors that make up SWIX, which may have been less volatile in the post-lockdown period. Alternatively, it could reflect that ALSI, with its broader market exposure, started to experience more volatility due to global economic uncertainties or the recovery phase post-pandemic, while SWIX's sector composition became more stable or less sensitive to these new risks.
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="ALSI vs SWIX Cumulative Returns", fig.height=2.7}
+# Loading the ALSI data and getting a look
+# Filterig the data to start in 2013 as it when there is the most available data in small caps
+
+data <- read_rds("data/ALSI.rds") %>% 
+    dplyr::filter(date > ymd(20131231))
+
+# Calculated the indices from this
+
+indices <- data %>% 
+    group_by(date) %>% 
+    mutate(ALSI = sum(J203 * Return),
+           SWIX = sum(J403 * Return)) %>% 
+    dplyr::select(date, ALSI, SWIX) %>% 
+    unique() %>% 
+    arrange(date) %>% 
+    ungroup()
+
+# Plotting their cumulative returns
+
+chart.CumReturns(R = indices%>% tbl_xts(),
+                 main = "", 
+                 legend.loc = "topleft",
+                 colorset = c("steelblue", "orange"))
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Rolling 120 Day Standard Deviation: ALSI vs SWIX", fig.height=2.7}
+chart.RollingPerformance(R = indices %>% tbl_xts(),
+                         FUN = "sd",
+                         width = 120, 
+                         main = "", 
+                         legend.loc = "bottomleft",
+                         colorset = c("steelblue", "orange"))
+```
+Figure 3 details the sectoral exposures mentioned in the previous section. From 2020 we see that the most evident changes are in resources, seeing the largest increase for both indices, but more so for the ALSI than the SWIX. This is likel due to the pandemic-induced demand for commodities such as gold, a safe-haven asset, likely boosted resource companies' performance. The ALSI's full exposure to global resource companies amplified this increase, while the SWIX, being more localized, reflected it to a lesser extent.
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Sectoral Exposure: ALSI vs SWIX"}
+exposure <- data %>% 
+    group_by(date, Sector) %>% 
+    mutate(ALSI_Exposure = sum(J203),
+           SWIX_Exposure = sum(J403)) %>% 
+    ungroup() %>% 
+    dplyr::select(date, Sector, ALSI_Exposure, SWIX_Exposure) %>% 
+    unique() %>% 
+    arrange(Sector)
+
+ggarrange(ggplot() + geom_area(data = exposure, aes(x = date, y = ALSI_Exposure, fill = Sector), alpha = 0.7) + labs(x = "ALSI", y = "") + theme_bw(), 
+          ggplot() + geom_area(data = exposure, aes(x = date, y = SWIX_Exposure, fill = Sector), alpha = 0.7) + labs(x = "SWIX", y = "") +theme_bw(),
+          nrow = 1, ncol = 2,
+          common.legend = T,
+          legend = "bottom")
+```
+Figure 4 represents the concentration of resources in larger cap sizes, aligning with the sectoral exposures observed in the ALSI and SWIX indices. As noted, resources saw the largest increase in exposure after 2020, with the effect being more pronounced in the ALSI than the SWIX. This is consistent with the Figure 4's depiction of resources as a dominant sector within the Large Caps category, which the ALSI represents more comprehensively due to its full market capitalization weighting. In contrast, the SWIX, which adjusts for local shareholding, places less emphasis on large resource companies that are foreign-owned. Furthermore, the resources' decreasing representation in smaller cap sizes underscores why the SWIX has relatively less exposure to the resources sector compared to the ALSI. 
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Stocks by Size and Sector"}
+# Stocks by size and sector
+
+data %>% 
+    dplyr::select(Tickers, Index_Name, Sector) %>% 
+    unique() %>%  
+    mutate(Index_Name = ifelse(is.na(Index_Name), "Not Specified", Index_Name)) %>% 
+    ggplot() +
+    geom_bar(aes(x = Index_Name, 
+                 fill = Sector)) +
+    labs(title = "Stocks by Size and Sector",
+       x = "Index Size",
+       y = "Number of Observations") + 
+    theme_bw()
+```
+# - Index Size Performance
+Figure 5 indicates that large caps and small caps have outperformed mid caps in terms of long-term cumulative returns, particularly after 2020. This aligns with the sectoral exposure dynamics discussed in the previous section. Large caps, which include a higher proportion of resources and industrials, seem to have benefited from the increased demand for commodities and resilient industrial performance during the recovery phases, including the post-COVID period. Small caps, on the other hand, display more aggressive growth, likely driven by high exposure to volatile but high-performing sectors. The mid-cap index's relative underperformance might stem from a higher exposure to sectors with limited recovery. 
+
+Figure 6 illustrates the rolling volatility for the same index sizes. Small caps consistently show the highest volatility, while large caps demonstrate lower and more stable volatility, and mid caps fall in between. The spike in volatility across all indices during the COVID crisis highlights the market-wide impact of the pandemic. However, large caps relatively lower increase in volatility suggests their greater stability due to higher relative resource sector exposure. Conversely, small caps higher volatility reflects their sensitivity to market shocks, which aligns with their higher weighting in resource-driven sectors, particularly during periods of uncertainty.
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Mean Cumulative Returns: Index Size", fig.height=2.7}
+data %>% 
+    dplyr::select(date, Return, Index_Name) %>% 
+    dplyr::filter(!is.na(Index_Name)) %>%
+    group_by(date, Index_Name) %>% 
+    mutate(Perf = mean(Return)) %>% 
+    dplyr::select(-Return) %>% 
+    unique() %>% 
+    pivot_wider(names_from = Index_Name,
+                values_from = Perf) %>% 
+    tbl_xts() %>% 
+    chart.CumReturns(R = .,
+                 main = "", 
+                 legend.loc = "topleft")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Mean Rolling 120 day Standard Deviation: Index Size", fig.height=2.7}
+data %>% 
+    dplyr::select(date, Return, Index_Name) %>% 
+    dplyr::filter(!is.na(Index_Name)) %>%
+    group_by(date, Index_Name) %>% 
+    mutate(Perf = mean(Return)) %>% 
+    dplyr::select(-Return) %>% 
+    unique() %>% 
+    pivot_wider(names_from = Index_Name,
+                values_from = Perf) %>% 
+    tbl_xts() %>% 
+    chart.RollingPerformance(R = .,
+                         FUN = "sd",
+                         width = 120, 
+                         main = "", 
+                         legend.loc = "topleft")
+```
+The higher cumulative returns and lower volatility of large caps suggest that the resources and industrials sectors, with substantial relative weight in large caps, acted as stabilizing forces during and after the COVID crisis. These sectors likely provided strong earnings growth during periods of increased commodity demand and economic recovery. Small caps, while benefiting from these trends, were more sensitive to shocks, as indicated by their higher volatility. Property, most dominant in mid and small caps, likely lessened performance particularly during COVID disruptions.
+
+# - Capping the ALSI and SWIX
+Capping an index refers to limiting the weight of certain stocks or sectors in the index to prevent them from dominating the overall performance, ensuring diversification and reducing the concentration risk that arises when a small number of large companies or sectors disproportionately influence the index. In the context of the ALSI and SWIX, capping may involve limiting the performance of large caps can have on returns and volatility. Without capping, the ALSI, for example, may overly reflect the performance of these large caps, potentially skewing perceptions of broader market trends. As such, a 5% and 10% cap is applied to both the ALSI and SWIX and compared to their uncapped counterparts in Figure 7 and 8.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Prep function rebalance data
+
+days <- read_rds("data/Rebalance_days.rds") %>% 
+    dplyr::filter(Date_Type == "Reb Trade Day") %>% 
+    pull(date)
+
+rebalance <- data %>% 
+    dplyr::filter(date %in% days) %>%
+    mutate(rebalance_time = format(date, "%Y%B")) %>% 
+    dplyr::select(-Return, -Sector, -Index_Name) 
+
+ALSI_Reb <- rebalance %>%  
+    rename(tickers = Tickers,
+           weight = J203) %>% 
+    dplyr::select(-J403)
+
+SWIX_Reb <- rebalance %>%  
+    rename(tickers = Tickers,
+           weight = J403) %>% 
+    dplyr::select(-J203)
+
+# Prep function returns data
+
+returns <- data %>% 
+    dplyr::select(date, Return, Tickers) %>% 
+    rename(return = Return,
+           tickers = Tickers)
+
+# Now apply my capping function to each index
+
+ALSI_Cap1 <- indexCAP(data = returns,
+                  rebalance = ALSI_Reb,
+                  cap = 0.05)
+colnames(ALSI_Cap1)[2] <- "ALSI 5% Cap"
+                  
+ALSI_Cap2 <- indexCAP(data = returns,
+                  rebalance = ALSI_Reb,
+                  cap = 0.1)
+colnames(ALSI_Cap2)[2] <- "ALSI 10% Cap"
+
+SWIX_Cap1 <- indexCAP(data = returns,
+                  rebalance = SWIX_Reb,
+                  cap = 0.05)
+colnames(SWIX_Cap1)[2] <- "SWIX 5% Cap"
+                  
+SWIX_Cap2 <- indexCAP(data = returns,
+                  rebalance = SWIX_Reb,
+                  cap = 0.1)
+colnames(SWIX_Cap2)[2] <- "SWIX 10% Cap"
+
+# Bind them all together for easy plotting and comparison
+
+capped_indices <- ALSI_Cap1 %>% 
+    inner_join(ALSI_Cap2, by = "date") %>% 
+    inner_join(SWIX_Cap1, by = "date") %>% 
+    inner_join(SWIX_Cap2, by = "date") %>% 
+    inner_join(indices, by = "date") %>% 
+    tbl_xts()
+```
+For the ALSI, the cumulative returns of the uncapped and 10% capped indices are quite close, with both outperforming the 5% capped index. The 10% cap yields the highest return possibly due to it allowing for greater exposure to the top-performing sectors, while the uncapped ALSI benefits from full market exposure. The 5% cap, however, likely restricts exposure to these high-performing sectors more severely, resulting in the lowest returns. Despite these differences, the uncapped and 10% capped ALSI are nearly very similar, suggesting that the cap of 10% still allows for substantial sectoral exposure.
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="ALSI Cumulative Returns: Caps", fig.height=2.7}
+chart.CumReturns(R = capped_indices[, c(1, 2, 5)],
+                 main = "", 
+                 legend.loc = "topleft")
+```
+For the SWIX, the cumulative returns across the uncapped, 10% cap, and 5% cap indices are relatively close, reflecting the index's focus on domestic shareholder representation, which already limits over concentration. The uncapped SWIX achieves the highest return, likely due to its exposure to top-performing sectors, while the 10% and 5% caps slightly reduce this exposure, resulting in marginally lower returns. However, the differences remain small, indicating that capping has a less pronounced impact on the SWIX compared to the ALSI, possibly due to the SWIX's already balanced sectoral structure.
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="SWIX Cumulative Returns: Caps", fig.height=2.7}
+chart.CumReturns(R = capped_indices[, c(3, 4, 6)],
+                 main = "", 
+                 legend.loc = "topleft")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+PerformanceAnalytics::table.DownsideRisk(R = capped_indices,
+                                         ci = 0.95,
+                                         scale = 12)%>% 
+    rownames_to_column(var = "Estimates") %>% 
+    kable(caption = "Downside Risks")
+```
+This highlights the trade-off between maximizing returns from sector strength and managing concentration risk through capping. The funds positioning also influences whether it would benefit from a cap, such as with the 10% ALSI, or not, such as with the SWIX. 
+
+# - Conclusion
+In this analysis, we compared the performance of the ALSI and SWIX with different capping strategies. By applying caps of 5% and 10% to the weightings of the to each index, we observed the impact on cumulative returns. For the ALSI, the uncapped index and the 10% capped index performed similarly, with both showing higher cumulative returns than the 5% capped index. This suggests that limiting the weight of the largest stocks had a dampening effect on the overall return. In contrast, the SWIX displayed a smaller difference between the uncapped, 5% capped, and 10% capped versions, with all three curves being relatively close to each other. This indicates that the SWIX's shareholder weighting structure is less sensitive to the effect of capping. These results provide insights into how different weighting and capping strategies can influence index performance, highlighting the importance of weight management in index design.
