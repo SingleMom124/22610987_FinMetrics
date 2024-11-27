@@ -4,33 +4,792 @@ output:
     variant: markdown_github
 ---
 
-# Purpose
+# Question 1
 
-Purpose of this work folder.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load the necessary packages
 
-Ideally store a minimum working example data set in data folder.
+rm(list = ls()) 
+invisible(gc())
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, knitr, ggrepel, fmxdat)
+list.files("questions/Question1/code", full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+```
 
-Add binary files in bin, and closed R functions in code. Human Readable settings files (e.g. csv) should be placed in settings/
+My goal here is to whey up the performance of the AI fund against the Capped SWIX and a selection of ASISA funds. But more than just making a case for it being the best, which is not necessarily the case 100% of the time here, I want to put its performance in perspective of the ASISA more generally.
 
+I Start by simply looking at and transforming the data according to my viewing pleasure and later needs.
 
 ```{r}
+# Loading the SWIX
+# I first remove the un-necessary columns...
+# ...And then create a Fund column with just the name 'Benchmark' repeating so i can cbind it later
 
-rm(list = ls()) # Clean your environment:
-gc() # garbage collection - It can be useful to call gc after a large object has been removed, as this may prompt R to return memory to the operating system.
-library(tidyverse)
-list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+bm <- read_rds("questions/Question1/data/Capped_SWIX.rds")%>% 
+    dplyr::select(-Tickers) %>% 
+    arrange(date) %>% 
+    mutate(Fund = "Benchmark")
+
+# Loading the AI fund
+# Rename columns to match with my 'bm' format
+# Again, create a Fund column with just the name 'AI_Fund' repeating so i can cbind it later
+
+ai_fund <- read_rds("questions/Question1/data/AI_Max_Fund.rds")%>% 
+    rename(Returns = AI_Fund) %>%
+    arrange(date) %>% 
+    mutate(Fund = "AI_Fund")
+
+# Loading the ASISA funds
+# Remove un-necessary columns
+
+asisa <- read_rds("questions/Question1/data/ASISA_Rets.rds")%>% 
+    dplyr::select(-FoF, -Index) %>% 
+    arrange(date) 
+
+# Now can just simply rbind() these together and filter the dates to start at in September of 2003
+# Simply because it gives a nice 20 year sample :)
+
+data = rbind(bm, ai_fund, asisa) %>% 
+    arrange(date) %>% 
+    dplyr::filter(date >= ymd(20080131))
+
+```
+
+Now that all of the funds have been put into a single data set, in long format for easy calculations and plotting, I want to calculate the returns. I use cumulative returns to see the overall period gain, and 12 month rolling returns for a more direct comparison.
+
+```{r}
+# Calculating the different type of returns
+
+data <- data %>% 
+    
+    # First calculating cumulative returns
+    
+    mutate(Returns = coalesce(Returns, 0)) %>% 
+    group_by(Fund) %>% 
+    mutate(Cum_Ret = cumprod(1 + Returns)) %>% 
+    
+    # Now calculating rolling returns
+    
+    mutate(Rolling_Ret = RcppRoll::roll_prod(1 + Returns,
+                                             12,
+                                             fill = NA,
+                                             align = "right") ^ (12 / 12) - 1) %>%  
+    group_by(date) %>% 
+    filter(any(!is.na(Rolling_Ret))) %>% 
+    ungroup() 
+```
+
+With the returns calculated, I decide which ASISA funds I am going to make my comparison too. I decide to first calculate how many of these funds actually beat the benchmark in terms of cumulative returns at the end of the period.
+
+```{r}
+# Calculating the end of period benchmark cumulative return
+
+bm_cum_ret <- data %>% 
+    dplyr::filter(date == max(date)) %>% 
+    dplyr::filter(Fund == "Benchmark") %>% 
+    pull(Cum_Ret)
+
+# Using the above, I create a dummy for whether a fund beats the benchmark or not and calculate the percentage that do
+
+exceed <- data %>% 
+    dplyr::filter(date == max(date)) %>% 
+    dplyr::filter(!(Fund %in% c("AI_Fund", "Benchmark"))) %>% 
+    mutate(exceed = ifelse(Cum_Ret >= max(bm_cum_ret), 1, 0)) %>% 
+    mutate(percent_exceed = sum(exceed) / length(unique(Fund)) * 100) %>% 
+    pull(percent_exceed) %>% 
+    unique
+```
+
+We see here that only 9.4% of funds exceed the benchmark. Sheesh. Based on this I decide to compare the AI fund to the top 5 best performing ASISA funds rather than those that it will definately outperform.
+
+```{r}
+# Determining the top 5
+
+best_asisa <- data %>% 
+    dplyr::filter(date == max(date)) %>% 
+    dplyr::filter(!(Fund %in% c("AI_Fund", "Benchmark"))) %>% 
+    mutate(exceed = ifelse(Cum_Ret >= bm_cum_ret, 1, 0)) %>% 
+    dplyr::filter(exceed == 1) %>% 
+    arrange(desc(Cum_Ret)) %>% 
+    head(5) %>% 
+    pull(Fund)
+
+# Now filter the ASISA fund to only look at these 5 and our other two measures
+
+data_subset1 <- data %>% 
+    dplyr::filter(Fund %in% c(best_asisa, c("AI_Fund", "Benchmark")))
+```
+
+Now I plot the cumulative returns of each fund in relation to their improvement from the benchmark. The AI fund being red and the benchmark black
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# First calculating the final cumulative difference from the benchmark
+
+diffs <- data_subset1 %>%
+    group_by(Fund) %>%
+    dplyr::filter(date == last(date)) %>%
+    ungroup()
+
+# Getting the max benchmark 
+
+bench_diff <- diffs %>%
+    dplyr::filter(Fund == "Benchmark") %>%
+    pull(Cum_Ret)
+
+# Calculating the gain of the other funds from this max
+
+diffs <- diffs %>%
+    dplyr::filter(!Fund == "Benchmark") %>%
+    mutate(final_diff = Cum_Ret / bench_diff * 100 - 100) %>%
+    dplyr::filter(!Fund == "Benchmark")
+
+# Getting the funds not including the benchmark
+
+funds <- data_subset1 %>%
+    filter(!Fund == "Benchmark")
+
+# Getting only the benchmark
+
+bench <- data_subset1 %>%
+    filter(Fund == "Benchmark")
+
+ggplot() +
+    geom_line(data = bench,
+              aes(x = date,
+                  y = Cum_Ret),
+              color = "black",
+              size = 1.2) +
+    geom_line(data = funds %>% dplyr::filter(!Fund == "AI_Fund"),
+              alpha = 0.7,
+              size = 0.8,
+              aes(x = date,
+                  y = Cum_Ret,
+                  color = Fund)) +
+    geom_line(data = funds %>% dplyr::filter(Fund == "AI_Fund"),
+              alpha = 0.7,
+              size = 1.2,
+              color = "red",
+              aes(x = date,
+                  y = Cum_Ret,
+                  color = Fund)) +
+    geom_label_repel(data = diffs,
+                     aes(x = date,
+                         y = Cum_Ret,
+                         label = paste0(round(final_diff, 1), "%")),
+                     size = ggpts(10),
+                     alpha = 1,
+                     color = "black",
+                     fontface = "bold",
+                     nudge_x = 220) +
+    labs(title = "Cumulative returns of top ASISA funds",
+         subtitle = "Base Return: Benchmark",
+         y = "Cumulative Return",
+         x = "Date")
+```
+
+Now I want to compare the 5 funds once they have had a 300 basis point fee applied to them. Here I follow the same logic as above, however, first I need to apply the fee to the original cumulative returns
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Basis points to %
+
+fee_rate <- 300 / 10000
+
+# Annual rate compounded monthly
+
+monthly_fee_rate <- (1 + fee_rate) ^ (1/12) - 1
+
+# Apply monthly fee rate cumulatively using compound interest
+
+asisa_fee1 <- data_subset1 %>%
+    arrange(date) %>%
+    dplyr::filter(Fund %in% best_asisa) %>%
+    group_by(Fund) %>%
+    mutate(Fee = Returns - monthly_fee_rate) %>%
+    mutate(Fee_Cum = cumprod(1 + Fee))
+
+# Now recalculate the percentage gain over the benchmark with the new cumulative returns for the 5 funds, and the same max as before
+
+diffs2 <- asisa_fee1 %>%
+    group_by(Fund) %>%
+    filter(date == last(date)) %>%
+    ungroup()%>%
+    dplyr::filter(!Fund == "Benchmark") %>%
+    mutate(final_diff = Fee_Cum / bench_diff * 100 - 100) %>%
+    filter(!Fund == "Benchmark")
+
+funds2 <- asisa_fee1 %>%
+    filter(!Fund == "Benchmark")
+
+ggplot() +
+    geom_line(data = bench,
+              aes(x = date,
+                  y = Cum_Ret),
+              color = "black",
+              size = 1.2) +
+    geom_line(data = funds2 %>% dplyr::filter(!Fund == "AI_Fund"),
+              alpha = 0.7,
+              size = 0.8,
+              aes(x = date,
+                  y = Fee_Cum,
+                  color = Fund)) +
+    geom_line(data = funds %>% dplyr::filter(Fund == "AI_Fund"),
+              alpha = 0.7,
+              size = 1.2,
+              color = "red",
+              aes(x = date,
+                  y = Cum_Ret,
+                  color = Fund)) +
+    geom_label_repel(data = diffs2,
+                     aes(x = date,
+                         y = Fee_Cum,
+                         label = paste0(round(final_diff, 1), "%")),
+                     size = ggpts(10),
+                     alpha = 1,
+                     color = "black",
+                     fontface = "bold",
+                     nudge_x = 220) +
+    labs(title = "Cumulative returns of top ASISA funds",
+         subtitle = "Base Return: Benchmark",
+         y = "Cumulative Return",
+         x = "Date")
+```
+
+With the fee applied, the difference between these funds and the AI fund is far less drastic. Now it is competing right up there with the big dogs. However, it is also useful to look at those rolling returns we calculated.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot() +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% best_asisa),
+              aes(x = date,
+                  y = Rolling_Ret,
+                  color = Fund),
+              size = 0.7,
+              alpha = 0.5) +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("Benchmark")),
+              aes(x = date,
+                  y = Rolling_Ret),
+              color = "black", 
+              linetype = "dashed",
+              size = 0.8) +
+    geom_line(data = data_subset1 %>% dplyr::filter(Fund %in% c("AI_Fund")),
+              aes(x = date,
+                  y = Rolling_Ret),
+              size = 0.8,
+              color = "red") +
+    labs(x = "Date",
+         y = "Rolling Returns") +
+    theme_bw()   
+```
+
+Then I also want to see how often each fund is under or over performing compared to the benchmark
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Creating a new character variable that defines the state of the fund relative to the benchmark
+
+strat1 <- data_subset1 %>% 
+    dplyr::select(date, Fund, Rolling_Ret) %>% 
+    pivot_wider(names_from = Fund,
+                values_from = Rolling_Ret) %>% 
+    pivot_longer(cols = c(-date, -Benchmark),
+                 names_to = "Fund", 
+                 values_to = "Returns") %>% 
+    group_by(Fund) %>% 
+    mutate(Performance = case_when(Returns > Benchmark ~ "Outperforming",
+                                   Returns < Benchmark ~ "Underperforming",
+                                   TRUE ~ "No Data"))
+
+ggplot(strat1, aes(x = Fund, fill = Performance)) +
+  geom_bar() +
+  labs(title = "Performance Comparison of Funds vs Benchmark",
+       x = "Performance Category",
+       y = "Number of Observations") + 
+    theme_bw()
+```
+However, the above is a best case scenario, I also wanted to get a random selection of the funds to should what an average case may look like. When we do this, we see a very different story, with the AI fund coming out on top.
+
+The seed was randomly typed out until I got a selection with a nice amount of available data
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Randomly select 5 funds
+
+set.seed(98765)
+
+data_subset2 <- data %>% 
+    dplyr::filter(Fund %in% c(sample(unique(asisa$Fund), 5), c("AI_Fund", "Benchmark")))
+
+# Do the same plot as above
+
+strat2 <- data_subset2 %>% 
+    dplyr::select(date, Fund, Rolling_Ret) %>% 
+    pivot_wider(names_from = Fund,
+                values_from = Rolling_Ret) %>% 
+    pivot_longer(cols = c(-date, -Benchmark),
+                 names_to = "Fund", 
+                 values_to = "Returns") %>% 
+    group_by(Fund) %>% 
+    mutate(Performance = case_when(Returns > Benchmark ~ "Outperforming",
+                                   Returns < Benchmark ~ "Underperforming",
+                                   TRUE ~ "No Data"))
+
+ggplot(strat2, aes(x = Fund, fill = Performance)) +
+  geom_bar() +
+  labs(title = "Performance Comparison of Funds vs Benchmark",
+       x = "Performance Category",
+       y = "Number of Observations") +
+    theme_bw()
+```
+
+# Question 2
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Load the necessary packages
+
+rm(list = ls()) 
+invisible(gc())
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, knitr, ggrepel, fmxdat, gt)
+list.files("questions/Question2/code", full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+```
+
+Here I want to determine whether hedging a portfolio is a good strategy in the long-term or not by replicating the study asking the same question. I start by simply looking at the data and making my desired transformations.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Loading the data
+# Flooring the date so that it will be the same as the ZAR data to join later
+
+indices <- read_rds("questions/Question2/data/Cncy_Hedge_Assets.rds") %>% 
+    mutate(date = floor_date(date, "month"))
+
+# Reading the monthly value for the ZAR to the USD
+# Calculating the currency returns
+
+zar <- read_rds("questions/Question2/data/Monthly_zar.rds") %>% 
+    mutate(fx_change = log(value) - log(lag(value))) %>% 
+    dplyr::select(-Tickers) %>% 
+    mutate(date = floor_date(date, "month"))
+```
+
+First I want to replicate the scatter plot showing when hedging has a good or bad outcome. To do this I need to construct a simple 2 variable USD index of just MSCI_ACWI and Bbg_Agg. So I separate these from my indices data frame and apply a 60 equity and 40 bond split respectively. I do no re-balancing here. Just simple aggregation. The plot is then simply the portfolio on the y-axis and the ZAR returns on the x-axis
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.cap="Impact of ZAR Hedging", fig1}
+# Constructing the global 60 - 40 USD portfolio...
+# And join it to the ZAR currency returns
+
+us_hedged_port <- indices %>% 
+    dplyr::select(date, MSCI_ACWI, Bbg_Agg) %>% 
+    pivot_longer(cols = -date,
+                 names_to = "Index",
+                 values_to = "Returns") %>% 
+    mutate(Weights = ifelse(Index == "MSCI_ACWI", 0.6, 0.4)) %>% 
+    group_by(date) %>% 
+    mutate(portfolio = sum(Weights * Returns)) %>% 
+    dplyr::select(date, portfolio) %>% 
+    unique() %>% 
+    inner_join(zar, by = "date")
+
+# And recreating the plot from the study
+
+fmxdat::finplot(us_hedged_port %>% 
+    ggplot(aes(x = fx_change,
+               y = portfolio))+
+    geom_rect(aes(xmin = -Inf, xmax = 0, ymin = 0, ymax = Inf), fill = "yellow4", alpha = 0.002) +  
+    geom_rect(aes(xmin = 0, xmax = Inf, ymin = 0, ymax = Inf), fill = "green3", alpha = 0.002) +  
+    geom_rect(aes(xmin = -Inf, xmax = 0, ymin = -Inf, ymax = 0), fill = "red", alpha = 0.002) +  
+    geom_rect(aes(xmin = 0, xmax = Inf, ymin = -Inf, ymax = 0), fill = "yellow", alpha = 0.002) +  
+    geom_point(color = "darkblue",
+               alpha = 0.5) +
+    geom_smooth(method = "lm",
+                color = "darkgrey", 
+                se = F) +
+    geom_hline(yintercept = 0, 
+               color = "black", 
+               linetype = "dashed", 
+               size = 0.5) +
+    geom_vline(xintercept = 0, 
+               color = "black", 
+               linetype = "dotted", 
+               size = 0.5) +
+    labs(x = "60-40 Global (USD Returns",
+         y = "USD-ZAR Returns"))
+```
+
+Lekka, got what I wanted. This scatter plot can now be used to interpret the effects of ZAR hedging. Now I can move on to calculating the local global split portfolios. 70 local 30 global with the same equity bond split above. The weights are determine by multiplying the respective percentages for each variable together. This is then re-balanced quarterly.
+
+This needs to be done for both a hedged and an unhedged portfolio. The unhedged portfolio needs to have the USD assets adjusted for ZAR exposure by adding the ZAR returns to it. The hedged leaves the USD assets as is.
+
+All of this is taken into account by the estimatePORT function that calculates the portfolio for you.
+
+```{r message=FALSE, warning=FALSE}
+# Estimate the weights of the index according to specifications
+
+weights <- data.frame(Index = colnames(indices)[sapply(indices, is.numeric)],
+                      Weights = c(0.6 * 0.3, 0.4 * 0.3, 0.6 * 0.7, 0.4 * 0.7))
+
+# Estimating an hedged index
+# Hedged indices are those that do not account for rand exposure, so we do nothing to these indices
+
+hedged_indices <- indices 
+
+hedged_port <- estimatePORT(data = hedged_indices,
+                            size = 1000,
+                            months = c(3, 6, 9, 12),
+                            weights = weights)
+
+# Now estimating as un-hedged portfolio
+# Need to control USD returns for currency effects, do this by adding the change in the rand to the USD indices
+
+unhedged_indices <- indices %>% 
+    inner_join(zar, by = "date") %>% 
+    mutate(MSCI_ACWI = MSCI_ACWI + fx_change,
+           Bbg_Agg = Bbg_Agg + fx_change) %>%
+    dplyr::select(-fx_change, -value) 
+
+unhedged_port <- estimatePORT(data = unhedged_indices,
+                              size = 1000,
+                              months = c(3, 6, 9, 12),
+                              weights = weights)
+```
+
+Then we need to calculate the annualized returns and standard deviations for each portfolio, including the original USD asset portfolio from before. This is done with the PerformanceAnalytics package. this is then all put nicely into a table for viewing.
+
+This requires the data to be in xts format.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Annualized returns
+# The USD portfolio
+
+us_hedged_annual_ret <- us_hedged_port %>% 
+    dplyr::select(date, portfolio) %>% 
+    tbl_xts() %>% 
+    Return.annualized(R = ., 
+                      scale = 12) %>% 
+    data.frame()
+
+# The local global hedged portfolio
+
+hedged_annual_ret <- hedged_port$returns %>% 
+    xts_tbl() %>% 
+    filter(date >= ymd(20041201) & date <= ymd(20221201)) %>% 
+    tbl_xts() %>% 
+    Return.annualized(R = ., 
+                      scale = 12) %>% 
+    data.frame()
+
+# The local global unhedged portfolio
+
+unhedged_annual_ret <- unhedged_port$returns %>% 
+    xts_tbl() %>% 
+    filter(date >= ymd(20041201) & date <= ymd(20221201)) %>% 
+    tbl_xts() %>% 
+    Return.annualized(R = ., 
+                      scale = 12) %>% 
+    data.frame()
+
+# Annualized SD
+# The USD portfolio
+
+hedged_annual_sd <- hedged_port$returns %>% 
+    sd.annualized(x = ., 
+                      scale = 12)
+
+# The local global hedged portfolio
+
+unhedged_annual_sd <- unhedged_port$returns %>% 
+    sd.annualized(x = ., 
+                      scale = 12)
+
+# The local global unhedged portfolio
+
+us_hedged_annual_sd <- us_hedged_port %>% 
+    dplyr::select(date, portfolio) %>% 
+    filter(date >= ymd(20041201) & date <= ymd(20221201)) %>% 
+    tbl_xts() %>% 
+    sd.annualized(x = ., 
+                  scale = 12)
+
+# Putting all into a table
+
+port_comp_table <- data.frame(Fund = c("Global (USD Returns: Hedged","Global + Local (Hedged)", "Global + Local (Unhedged"),
+                        "Returns Ann." = c(us_hedged_annual_ret$portfolio, hedged_annual_ret$portfolio.returns, unhedged_annual_ret$portfolio.returns),
+                        "Std Ann." = c(us_hedged_annual_sd, hedged_annual_sd, unhedged_annual_sd))
+
+port_comp_table %>% 
+    gt(caption = "Portfolio Performance")
+```
+
+This is not an exact match but a decent replication of the study. I further decide to plot some downside risk estimates and the cumulative returns of the hedged and unhedged portfolios again using performance analytics to further home in on the points above. 
+
+Unhedged is better on all accounts over the long term.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# First I join the two portfolio returns together into a single xts object for comparative plotting
+
+portfolios <- left_join(hedged_port$returns %>% xts_tbl() %>% rename("Hedged" = portfolio.returns),
+                        unhedged_port$returns %>% xts_tbl() %>% rename("Unhedged" = portfolio.returns),
+                        by = "date") %>% 
+    filter(date >= ymd(20041201) & date <= ymd(20221201)) %>% 
+    tbl_xts()
+
+# Making the downside risk table with these indices
+    
+downside_table <- PerformanceAnalytics::table.DownsideRisk(R = portfolios,
+                                             ci = 0.95,
+                                             Rf = 0, 
+                                             MAR = 0) %>% data.frame() %>% 
+    rownames_to_column(var = "Estimate") 
+
+downside_table[c(1,5,7,8:11),] %>% 
+    gt(caption = "Downside Risks")
+
+# Cumulative returns with these indices
+
+chart.CumReturns(R = portfolios,
+                 width = 12, 
+                 main = "",
+                 legend.loc = "topleft",
+                 colorset = c("steelblue", "orange"))
+    
+```
+
+# Question 3
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Necessary packages
+
+rm(list = ls()) 
+invisible(gc())
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, gt, knitr, ggpubr)
+list.files('questions/Question3/code', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+```
+
+The goal here is to compare the ALSI and SWIX methodologies by looking at sectoral performance and varying index sizes and then within this context evaluating the impact of various capping levels and whether they are necessary. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Loading the ALSI data and getting a look
+# Filtering the data to start in 2013 as it when there is the most available data in small caps
+
+data <- read_rds("data/ALSI.rds") %>% 
+    dplyr::filter(date > ymd(20131231))
+```
+
+Here I was a bit confused by what the J203 and J403 were communicating but summing them together revealed they are the weights for each ticker as they sum to one for each day
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Weights summed to 1
+
+data %>% group_by(date) %>% summarise(sum(J203))
+data %>% group_by(date) %>% summarise(sum(J403))
+```
+
+Calculated the indices from this using simple aggregation with the weight for each stock and its returns for each respective day.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# First looking at the indices
+
+indices <- data %>% 
+    group_by(date) %>% 
+    mutate(ALSI = sum(J203 * Return),
+           SWIX = sum(J403 * Return)) %>% 
+    dplyr::select(date, ALSI, SWIX) %>% 
+    unique() %>% 
+    arrange(date)
+```
+
+Now I decide to evaluate the performance of each index by plotting the cumulative returns and 12 month rolling standard deviation using PerformanceAnalytics
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+chart.RollingPerformance(R = indices %>% tbl_xts(),
+                         FUN = "sd",
+                         width = 120, 
+                         main = "Rolling 120 day Standard Deviation", 
+                         legend.loc = "bottomleft",
+                         colorset = c("steelblue", "orange"))
+
+chart.CumReturns(R = indices%>% tbl_xts(),
+                 main = "Portfolios cumulative returns", 
+                 legend.loc = "topleft",
+                 colorset = c("steelblue", "orange"))
+
+```
+The relationship of the indices reverses after the covid period. I am going to investigate this through their sectoral compositions. I do this by Summing the weights for each stock belonging to a given sector together and seeing how this changes over time.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+exposure <- data %>% 
+    group_by(date, Sector) %>% 
+    mutate(ALSI = sum(J203),
+           SWIX = sum(J403)) %>% 
+    ungroup() %>% 
+    dplyr::select(date, Sector, ALSI, SWIX) %>% 
+    unique() %>% 
+    arrange(Sector)
+
+ggarrange(ggplot() + geom_area(data = exposure, aes(x = date, y = ALSI, fill = Sector), alpha = 0.7) + labs(x = "ALSI", y = "") + theme_bw(), 
+          ggplot() + geom_area(data = exposure, aes(x = date, y = SWIX, fill = Sector), alpha = 0.7) + labs(x = "SWIX", y = "") +theme_bw(),
+          nrow = 1, ncol = 2,
+          common.legend = T,
+          legend = "bottom")
+```
+I also want to see the sectoral composition of each type of stock cap. To better understand the above
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Stocks by size and sector
+
+data %>% 
+    dplyr::select(Tickers, Index_Name, Sector) %>% 
+    unique() %>%  
+    mutate(Index_Name = ifelse(is.na(Index_Name), "Not Specified", Index_Name)) %>% 
+    ggplot() +
+    geom_bar(aes(x = Index_Name, 
+                 fill = Sector)) +
+    labs(title = "Stocks by Size and Sector",
+       x = "Index Size",
+       y = "Number of Observations") + 
+    theme_bw()
+```
+There is a strong influence of resource based stocks after the covid period. Unfortunately, there is a lot of unclassified cap sizes. I then decide to also look at the average cumulative returns and 120 day rolling standard deviation of each cap to assess their performance. 
+
+Small caps seem to perform the best, with the highest returns and lowest volatility. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+data %>% 
+    dplyr::select(date, Return, Index_Name) %>% 
+    dplyr::filter(!is.na(Index_Name)) %>%
+    group_by(date, Index_Name) %>% 
+    mutate(Perf = mean(Return)) %>% 
+    dplyr::select(-Return) %>% 
+    unique() %>% 
+    pivot_wider(names_from = Index_Name,
+                values_from = Perf) %>% 
+    tbl_xts() %>% 
+    chart.CumReturns(R = .,
+                 main = "Index size mean cumulative returns", 
+                 legend.loc = "topleft")
+data %>% 
+    dplyr::select(date, Return, Index_Name) %>% 
+    dplyr::filter(!is.na(Index_Name)) %>%
+    group_by(date, Index_Name) %>% 
+    mutate(Perf = mean(Return)) %>% 
+    dplyr::select(-Return) %>% 
+    unique() %>% 
+    pivot_wider(names_from = Index_Name,
+                values_from = Perf) %>% 
+    tbl_xts() %>% 
+    chart.RollingPerformance(R = .,
+                         FUN = "sd",
+                         width = 120, 
+                         main = "Rolling 120 day Standard Deviation", 
+                         legend.loc = "topleft")
+
+```
+
+Now lets cap our indices. First the requires us to know the re balance dates which we filter out of the days data, and then use to filter the main data. One we have the data for the indices on the days they are re balanced, we separate it into seperate data for the ALSI and SWIX to feed into our function in the next step.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Getting the re balance data by filtering the original data according to the re balance days
+
+days <- read_rds("questions/Question3/data/Rebalance_days.rds") %>% 
+    dplyr::filter(Date_Type == "Reb Trade Day") %>% 
+    pull(date)
+
+rebalance <- data %>% 
+    dplyr::filter(date %in% days) %>%
+    mutate(rebalance_time = format(date, "%Y%B")) %>% 
+    dplyr::select(-Return, -Sector, -Index_Name)
+
+# Separating the re-balance data
+# The renaming is done simply to meet the requirements of the function I wrote
+
+ALSI_Reb <- rebalance %>%  
+    rename(tickers = Tickers,
+           weight = J203) %>% 
+    dplyr::select(-J403)
+
+SWIX_Reb <- rebalance %>%  
+    rename(tickers = Tickers,
+           weight = J403) %>% 
+    dplyr::select(-J203)
+
+# Lastly, we need the returns data to actually re balance
+# Again, renaming is done simply to meet the requirements of my function
+
+returns <- data %>% 
+    dplyr::select(date, Return, Tickers) %>% 
+    rename(return = Return,
+           tickers = Tickers)
+```
+
+Now with our three inputs, we can cap the indices by feeding them into my indexCAP function. I do this four times, a 5% and a 10% cap for each index.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# ALSI caps
+
+ALSI_Cap1 <- indexCAP(data = returns,
+                  rebalance = ALSI_Reb,
+                  cap = 0.05)
+colnames(ALSI_Cap1)[2] <- "ALSI 5% Cap"
+                  
+ALSI_Cap2 <- indexCAP(data = returns,
+                  rebalance = ALSI_Reb,
+                  cap = 0.1)
+colnames(ALSI_Cap2)[2] <- "ALSI 10% Cap"
+
+# SWIX caps
+
+SWIX_Cap1 <- indexCAP(data = returns,
+                  rebalance = SWIX_Reb,
+                  cap = 0.05)
+colnames(SWIX_Cap1)[2] <- "SWIX 5% Cap"
+                  
+SWIX_Cap2 <- indexCAP(data = returns,
+                  rebalance = SWIX_Reb,
+                  cap = 0.1)
+colnames(SWIX_Cap2)[2] <- "SWIX 10% Cap"
+```
+
+With the capped indices I create a table of all versions of the index, the four capped ones, and the original two. So three versions of each index. with this I use performance analytics to estimate the cumulative returns for 6 indices, only comparing each version of the ALSI to itself and each version of the SWIX to itself. There is no cross index comparison of the caps as I wouldn't know how to interpret it. I also further estimate the downside risks.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Creating the index data frame
+
+capped_indices <- ALSI_Cap1 %>% 
+    inner_join(ALSI_Cap2, by = "date") %>% 
+    inner_join(SWIX_Cap1, by = "date") %>% 
+    inner_join(SWIX_Cap2, by = "date") %>% 
+    inner_join(indices, by = "date") %>% 
+    tbl_xts()
+
+# Cumulative returns plots
+
+chart.CumReturns(R = capped_indices[, c(1, 2, 5)],
+                 main = "ALSI cumulative returns", 
+                 legend.loc = "topleft")
+
+chart.CumReturns(R = capped_indices[, c(3, 4, 6)],
+                 main = "SWIX cumulative returns", 
+                 legend.loc = "topleft")
+
+# Downside risks table
+
+PerformanceAnalytics::table.DownsideRisk(R = capped_indices,
+                                         ci = 0.95,
+                                         scale = 12)%>% 
+    rownames_to_column(var = "Estimates") %>% 
+    gt(caption = "Downside Risks")
+```
+
+The ALSI benefits from a 10% cap, but the SWIX does not benefit from either the 5% or 10% caps. However, the downside risks do not seem to indicate much benefit.
+
+# Question 4
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Necessary packages
+
+rm(list = ls()) 
+invisible(gc())
+library(pacman)
+p_load(rmsfuns, tidyverse, tbl2xts, devtools, PerformanceAnalytics, ggplot2, TTR, RcppRoll, xts, gt, knitr, ggpubr)
+list.files('questions/Question4/code', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
 ```
 
 
-```{r}
-# PDF Texevier:
-Texevier::create_template(directory = "Questions",
-                          template_name = "Question1"
-)
-
-# HTML Texevier:
-Texevier::create_template_html(directory = "Questions",
-                          template_name = "Question2"
-)
-```
 
